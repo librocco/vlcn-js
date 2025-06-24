@@ -1,5 +1,5 @@
 # crsqlite-js
-
+ 
 JavaScript packages to use `cr-sqlite` in the browser, node, react and other JS frameworks & environments.
 
 # Quickstart
