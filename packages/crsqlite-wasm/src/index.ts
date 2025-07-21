@@ -12,7 +12,7 @@ type SQLiteAPI = ReturnType<typeof SQLite.Factory>;
 export class SQLite3 {
   constructor(private base: SQLiteAPI) {}
 
-  open(filename?: string, mode: string = "c") {
+  open(filename?: string, mode: string = "c", vfs = "idb-batch-atomic") {
     return serialize(
       null,
       undefined,
@@ -22,7 +22,7 @@ export class SQLite3 {
           SQLite.SQLITE_OPEN_CREATE |
             SQLite.SQLITE_OPEN_READWRITE |
             SQLite.SQLITE_OPEN_URI,
-          filename != null ? "idb-batch-atomic" : undefined
+          filename != null ? vfs : undefined
         );
       },
       topLevelMutex
