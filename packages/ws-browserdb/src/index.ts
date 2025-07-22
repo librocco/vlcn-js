@@ -6,7 +6,7 @@ import tblrx from "@vlcn.io/rx-tbl";
 
 const ENVIRONMENT_IS_WORKER = typeof importScripts === "function";
 
-class WrappedDB implements DB {
+export class WrappedDB implements DB {
   readonly #db;
   readonly #pullChangesetStmt;
   readonly #applyChangesetStmt;
