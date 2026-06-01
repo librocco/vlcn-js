@@ -4,8 +4,8 @@ import {
   tags,
   uintArraysEqual,
 } from "@vlcn.io/ws-common";
-import DB, { IDB } from "../DB.js";
-import Transport from "../Trasnport.js";
+import type { IDB } from "../DB.js";
+import type Transport from "../Trasnport.js";
 import { logger } from "@vlcn.io/logger-provider";
 
 /**
@@ -57,8 +57,13 @@ export default class OutboundStream {
   }
 
   reset(msg: RejectChanges) {
-    // the peer rejected our changes.
-    // re-wind our stream back.
+    // The peer rejected our changes: they detected a gap because the `since`
+    // we sent was ahead of what they have actually applied (e.g. a previous
+    // batch failed to apply or was lost mid-connection). Rewind our cursor to
+    // the version they report and re-send from there. Without this, the gap is
+    // never re-delivered and the peer silently diverges forever.
+    this.#lastSent = msg.since;
+    this.#dbChanged();
   }
 
   // db change notifications are already throttled for us in `DB.ts`
