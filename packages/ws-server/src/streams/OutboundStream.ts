@@ -52,8 +52,11 @@ export default class OutboundStream {
       throw new Error(`Illegal state -- OutboundStream has been closed`);
     }
     this.#disposer = this.#db.onChange(this.#dbChanged);
-    // initial kickoff
-    this.#dbChanged();
+    // Initial kickoff. Deliberately NOT via #dbChanged: ConnectionBroker wraps
+    // start() and reports a failed handshake to the client, so a fault here must
+    // still propagate. Only the callback paths (change listener, buffer-full
+    // retry) are isolated, because those have no caller to catch them.
+    this.#pumpChanges();
   }
 
   reset(msg: RejectChanges) {
@@ -68,8 +71,34 @@ export default class OutboundStream {
 
   // db change notifications are already throttled for us in `DB.ts`
   // but we also apply some backpressure if the outbound buffer is full.
+  //
+  // This runs as a callback: from the db's change listener, and from our own
+  // buffer-full setTimeout. A throw here therefore has no caller to catch it and
+  // takes down the entire process -- every room and every other client -- for
+  // what is a fault in ONE stream. So the body is wrapped and a failure stops
+  // just this stream; the peer sees the connection drop and reconnects.
   #dbChanged = () => {
+    try {
+      this.#pumpChanges();
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      logger.error(
+        `OutboundStream to ${bytesToHex(
+          this.#to
+        )} failed (${reason}); stopping this stream instead of crashing the server`
+      );
+      this.stop();
+    }
+  };
+
+  #pumpChanges() {
     logger.info(`OutboundStream got a db change event`);
+    // A disposed listener can still be invoked: the db's change notification is
+    // delivered via setTimeout, so a callback scheduled before stop() still runs
+    // afterwards -- against a db the cache may already have closed.
+    if (this.#closed) {
+      return;
+    }
     if (this.#timeoutHandle != null) {
       clearTimeout(this.#timeoutHandle);
       this.#timeoutHandle = null;
@@ -110,11 +139,17 @@ export default class OutboundStream {
       this.#lastSent = since;
       throw e;
     }
-  };
+  }
 
   stop() {
     if (this.#disposer) {
       this.#disposer();
+      this.#disposer = null;
+    }
+    // Without this, a pending buffer-full retry fires after the stream is gone.
+    if (this.#timeoutHandle != null) {
+      clearTimeout(this.#timeoutHandle);
+      this.#timeoutHandle = null;
     }
     this.#closed = true;
   }

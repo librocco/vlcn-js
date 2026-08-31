@@ -63,3 +63,88 @@ test("reset() rewinds the cursor and re-sends after a peer rejects a gap", () =>
   expect(sent[1].since).toEqual([1n, 0]);
   expect(sent[1].changes.map((c: any) => c[5])).toEqual([2n, 3n]);
 });
+
+// A db whose change-listener we can fire by hand, and whose pullChangeset can be
+// made to fail on demand.
+function controllableDb(): {
+  db: IDB;
+  fireChange: () => void;
+  isSubscribed: () => boolean;
+  failWith: (err: Error | null) => void;
+  pullCount: () => number;
+} {
+  // `captured` deliberately survives disposal: the real FSNotify delivers change
+  // events through setTimeout, so a callback scheduled before stop() still fires
+  // after the listener has been removed. That is the case we need to exercise.
+  let captured: (() => void) | null = null;
+  let subscribed = false;
+  let err: Error | null = null;
+  let pulls = 0;
+  const db = {
+    siteId: new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]),
+    onChange: (fn: () => void) => {
+      captured = fn;
+      subscribed = true;
+      return () => {
+        subscribed = false;
+      };
+    },
+    pullChangeset: () => {
+      pulls++;
+      if (err) throw err;
+      return [];
+    },
+  } as unknown as IDB;
+  return {
+    db,
+    fireChange: () => captured?.(),
+    isSubscribed: () => subscribed,
+    failWith: (e: Error | null) => {
+      err = e;
+    },
+    pullCount: () => pulls,
+  };
+}
+
+test("a failing pullChangeset in the change callback does not escape (would kill the process)", () => {
+  const { db, fireChange, failWith, isSubscribed } = controllableDb();
+  const { transport } = recordingTransport();
+
+  const stream = new OutboundStream(transport, db, [], clientId);
+  stream.start();
+
+  // The db goes bad after the handshake, as it does when the cache closes it
+  // underneath a live stream.
+  failWith(new Error("SQL logic error"));
+
+  // Before this fix the throw propagated out of the listener/timer callback,
+  // where nothing catches it, and took the whole sync server down.
+  expect(() => fireChange()).not.toThrow();
+  // and it takes itself out of service rather than failing on every future event
+  expect(isSubscribed()).toBe(false);
+});
+
+test("start() still propagates, so the broker can report a failed handshake", () => {
+  const { db, failWith } = controllableDb();
+  const { transport } = recordingTransport();
+  failWith(new Error("SQL logic error"));
+
+  const stream = new OutboundStream(transport, db, [], clientId);
+  expect(() => stream.start()).toThrow(/SQL logic error/);
+});
+
+test("a change callback that arrives after stop() does not touch the db", () => {
+  const { db, fireChange, pullCount } = controllableDb();
+  const { transport } = recordingTransport();
+
+  const stream = new OutboundStream(transport, db, [], clientId);
+  stream.start();
+  const afterStart = pullCount();
+
+  stream.stop();
+  // The db delivers change notifications via setTimeout, so one can still land
+  // after the stream was disposed.
+  fireChange();
+
+  expect(pullCount()).toBe(afterStart);
+});
